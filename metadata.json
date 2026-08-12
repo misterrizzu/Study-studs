@@ -1,0 +1,6 @@
+{
+  "name": "Study Studs",
+  "description": "Personal exam preparation app with offline study material, automated question extraction, diagram rendering, and test history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
