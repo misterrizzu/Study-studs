@@ -94,14 +94,19 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material.icons.filled.ContentCopy
 import com.example.data.local.ChapterEntity
 import com.example.data.local.PageEntity
+import com.example.data.model.DocumentPosition
+import com.example.data.model.DocumentSelection
+import com.example.data.model.LogicalDocumentIndex
 import com.example.data.model.PageContent
 import com.example.data.model.PageElement
+import com.example.data.model.SelectionScope
 import android.app.Activity
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.example.ui.components.DiagramCanvasView
 import com.example.ui.components.RichPageRenderer
 import com.example.util.LocalContentProcessor
 import kotlinx.coroutines.launch
@@ -122,6 +127,9 @@ fun ReaderScreen(
     onReplaceElementAt: (chapterId: Long, globalIndex: Int, newElem: PageElement) -> Unit = { _, _, _ -> },
     onReplaceElementRange: (chapterId: Long, startIndex: Int, endIndex: Int, newElem: PageElement) -> Unit = { _, _, _, _ -> },
     onDeleteElementRange: (chapterId: Long, startIndex: Int, endIndex: Int) -> Unit = { _, _, _ -> },
+    onReplaceDocumentSelection: (chapterId: Long, selection: DocumentSelection, replacement: String) -> Unit = { _, _, _ -> },
+    onFormatDocumentSelection: (chapterId: Long, selection: DocumentSelection, prefix: String, suffix: String) -> Unit = { _, _, _, _ -> },
+    onRestoreChapterPages: (chapterId: Long, pageSnapshots: List<PageEntity>) -> Unit = { _, _ -> },
     onAppendCallout: (chapterId: Long, pageIndex: Int, title: String, text: String) -> Unit = { _, _, _, _ -> },
     onRunAiAction: (instruction: String, pageText: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> },
     backgroundProcessingStatus: String? = null
@@ -166,6 +174,9 @@ fun ReaderScreen(
         pageCount = { totalDisplayPages }
     )
     val coroutineScope = rememberCoroutineScope()
+    val documentIndex = remember(pages) {
+        LogicalDocumentIndex.build(pages, onParsePageContent)
+    }
 
     var showControlsOverlay by remember { mutableStateOf(false) }
     var showStatusBarAlways by remember { mutableStateOf(false) }
@@ -211,6 +222,11 @@ fun ReaderScreen(
     var showAskAiSheet by remember { mutableStateOf(false) }
     var selectedTextForAi by remember { mutableStateOf("") }
     var selectedElementIndexForAi by remember { mutableStateOf<Int?>(null) }
+    var replaceSelectedTextFromAi by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    var askAiInitialPrompt by remember { mutableStateOf("") }
+    var activeDocumentSelection by remember { mutableStateOf<DocumentSelection?>(null) }
+    var undoSnapshots by remember { mutableStateOf<List<List<PageEntity>>>(emptyList()) }
+    var redoSnapshots by remember { mutableStateOf<List<List<PageEntity>>>(emptyList()) }
 
     var isInteracting by remember { mutableStateOf(false) }
     var isScrollMode by remember { mutableStateOf(true) }
@@ -219,6 +235,95 @@ fun ReaderScreen(
     BackHandler(enabled = isInteracting || selectedElementIndex != null) {
         isInteracting = false
         selectedElementIndex = null
+        activeDocumentSelection = null
+    }
+
+    fun selectDocumentScope(selection: DocumentSelection?) {
+        activeDocumentSelection = selection
+        if (selection == null) {
+            selectionStart = null
+            selectionEnd = null
+            selectedElementIndex = null
+        } else {
+            val normalized = selection.normalized(documentIndex)
+            selectionStart = normalized.start.blockIndex
+            selectionEnd = normalized.end.blockIndex
+            selectedElementIndex = normalized.start.blockIndex
+        }
+    }
+
+    fun selectionLabel(selection: DocumentSelection): String {
+        return when (selection.scope) {
+            SelectionScope.TEXT_RANGE -> "Text range"
+            SelectionScope.BLOCK_RANGE -> "Blocks ${selection.start.blockIndex + 1}-${selection.end.blockIndex + 1}"
+            SelectionScope.PAGE -> "Page ${documentIndex.blocks.getOrNull(selection.start.blockIndex)?.pageIndex?.plus(1) ?: pagerState.currentPage + 1}"
+            SelectionScope.CHAPTER -> "Chapter"
+            SelectionScope.DOCUMENT -> "Entire document"
+        }
+    }
+
+    fun selectionForElementRange(startElementIndex: Int, endElementIndex: Int): DocumentSelection? {
+        val minElement = minOf(startElementIndex, endElementIndex)
+        val maxElement = maxOf(startElementIndex, endElementIndex)
+        val selectedBlocks = documentIndex.blocks.filter { it.documentElementIndex in minElement..maxElement }
+        val first = selectedBlocks.firstOrNull() ?: return null
+        val last = selectedBlocks.last()
+        return DocumentSelection(
+            start = DocumentPosition(first.blockIndex, 0),
+            end = DocumentPosition(last.blockIndex, last.text.length),
+            scope = SelectionScope.BLOCK_RANGE
+        )
+    }
+
+    fun selectionForCurrentDisplayPage(): DocumentSelection? {
+        val currentPage = displayPages.getOrNull(pagerState.currentPage) ?: return null
+        if (currentPage.elements.isEmpty()) return null
+        val startElementIndex = displayPages.take(pagerState.currentPage).sumOf { it.elements.size }
+        val endElementIndex = startElementIndex + currentPage.elements.lastIndex
+        return selectionForElementRange(startElementIndex, endElementIndex)?.copy(scope = SelectionScope.PAGE)
+    }
+
+    fun runUndoableEdit(edit: () -> Unit) {
+        undoSnapshots = undoSnapshots + listOf(pages)
+        redoSnapshots = emptyList()
+        edit()
+    }
+
+    fun undoLastEdit() {
+        val snapshot = undoSnapshots.lastOrNull() ?: return
+        undoSnapshots = undoSnapshots.dropLast(1)
+        redoSnapshots = redoSnapshots + listOf(pages)
+        onRestoreChapterPages(chapter.id, snapshot)
+        selectDocumentScope(null)
+    }
+
+    fun redoLastEdit() {
+        val snapshot = redoSnapshots.lastOrNull() ?: return
+        redoSnapshots = redoSnapshots.dropLast(1)
+        undoSnapshots = undoSnapshots + listOf(pages)
+        onRestoreChapterPages(chapter.id, snapshot)
+        selectDocumentScope(null)
+    }
+
+    fun openAiForDocumentSelection(selection: DocumentSelection, instruction: String? = null) {
+        val normalized = selection.normalized(documentIndex)
+        val selectedText = documentIndex.textForSelection(normalized)
+        if (selectedText.isBlank()) return
+        selectedTextForAi = selectedText
+        selectedElementIndexForAi = normalized.start.blockIndex
+        askAiInitialPrompt = instruction ?: when (normalized.scope) {
+            SelectionScope.PAGE -> "Rewrite this page clearly while preserving meaning."
+            SelectionScope.CHAPTER -> "Rewrite this chapter clearly for study notes."
+            SelectionScope.DOCUMENT -> "Improve this document while preserving its structure and meaning."
+            else -> "Rewrite the selected text clearly while preserving meaning."
+        }
+        replaceSelectedTextFromAi = { replacement ->
+            runUndoableEdit {
+                onReplaceDocumentSelection(chapter.id, normalized, replacement)
+            }
+            selectDocumentScope(null)
+        }
+        showAskAiSheet = true
     }
 
     fun getRawTextForCurrentPage(): String {
@@ -310,6 +415,11 @@ fun ReaderScreen(
                                 selectionStart = start
                                 selectionEnd = end
                                 selectedElementIndex = start
+                                activeDocumentSelection = if (start != null && end != null) {
+                                    selectionForElementRange(start, end)
+                                } else {
+                                    null
+                                }
                             },
                             onDeleteElementRange = { start, end ->
                                 onDeleteElementRange(chapter.id, start, end)
@@ -330,9 +440,11 @@ fun ReaderScreen(
                                 onUpdateElementText(chapter.id, elemIdx, oldText, newText)
                             },
                             onEditingStateChanged = { isInteracting = it },
-                            onAskAiSelectedText = { selText ->
+                            onAskAiSelectedText = { selText, elemIdx, replaceSelectedText ->
                                 selectedTextForAi = selText
-                                selectedElementIndexForAi = selectedElementIndex ?: 0
+                                selectedElementIndexForAi = elemIdx
+                                replaceSelectedTextFromAi = replaceSelectedText
+                                askAiInitialPrompt = ""
                                 showAskAiSheet = true
                             },
                             onConvertDiagramToSvg = { asciiText, onResult ->
@@ -501,6 +613,14 @@ fun ReaderScreen(
                                         selectionStart = start
                                         selectionEnd = end
                                         selectedElementIndex = start
+                                        val pageOffset = displayPages.take(pageIndex).sumOf { it.elements.size }
+                                        activeDocumentSelection = if (start != null && end != null) {
+                                            val globalStart = pageOffset + minOf(start, end)
+                                            val globalEnd = pageOffset + maxOf(start, end)
+                                            selectionForElementRange(globalStart, globalEnd)
+                                        } else {
+                                            null
+                                        }
                                     },
                                     onDeleteElementRange = { startLocal, endLocal ->
                                         val pageOffset = displayPages.take(pageIndex).sumOf { it.elements.size }
@@ -523,10 +643,12 @@ fun ReaderScreen(
                                         onUpdateElementText(chapter.id, globalIndex, oldText, newText)
                                     },
                                     onEditingStateChanged = { isInteracting = it },
-                                    onAskAiSelectedText = { selText ->
+                                    onAskAiSelectedText = { selText, elemIdx, replaceSelectedText ->
                                         selectedTextForAi = selText
                                         val pageOffset = displayPages.take(pageIndex).sumOf { it.elements.size }
-                                        selectedElementIndexForAi = pageOffset + (selectedElementIndex ?: 0)
+                                        selectedElementIndexForAi = pageOffset + elemIdx
+                                        replaceSelectedTextFromAi = replaceSelectedText
+                                        askAiInitialPrompt = ""
                                         showAskAiSheet = true
                                     },
                                     onConvertDiagramToSvg = { asciiText, onResult ->
@@ -618,6 +740,98 @@ fun ReaderScreen(
                     contentDescription = "Ask AI Assistant",
                     modifier = Modifier.size(22.dp)
                 )
+            }
+
+            activeDocumentSelection?.let { selection ->
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                    tonalElevation = 6.dp,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = selectionLabel(selection),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Button(
+                            onClick = { openAiForDocumentSelection(selection) },
+                            contentPadding = ButtonDefaults.ContentPadding
+                        ) {
+                            Text("AI Edit", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { openAiForDocumentSelection(selection, "Summarize the selected scope into concise study notes.") }
+                        ) {
+                            Text("Summarize", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val selectedText = documentIndex.textForSelection(selection)
+                                val diagram = LocalContentProcessor.createEducationalDiagramIfUseful(
+                                    content = selectedText,
+                                    instruction = "Generate Diagram"
+                                )
+                                if (diagram != null) {
+                                    val normalized = selection.normalized(documentIndex)
+                                    val targetIndex = documentIndex.blocks
+                                        .getOrNull(normalized.end.blockIndex)
+                                        ?.documentElementIndex
+                                        ?: normalized.end.blockIndex
+                                    runUndoableEdit {
+                                        onInsertElementAfter(chapter.id, targetIndex, diagram)
+                                    }
+                                }
+                            }
+                        ) {
+                            Text("Diagram", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                runUndoableEdit {
+                                    onFormatDocumentSelection(chapter.id, selection, "<font color=\"#1E88E5\">", "</font>")
+                                }
+                            }
+                        ) {
+                            Text("Blue", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                runUndoableEdit {
+                                    onFormatDocumentSelection(chapter.id, selection, "**", "**")
+                                }
+                            }
+                        ) {
+                            Text("Bold", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                runUndoableEdit {
+                                    onReplaceDocumentSelection(chapter.id, selection, "")
+                                }
+                                selectDocumentScope(null)
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text("Delete", fontSize = 12.sp)
+                        }
+                        TextButton(onClick = { selectDocumentScope(null) }) {
+                            Text("Clear", fontSize = 12.sp)
+                        }
+                    }
+                }
             }
 
             // Minimal Controls Overlay
@@ -732,6 +946,69 @@ fun ReaderScreen(
                                     )
                                 }
                             }
+                            IconButton(
+                                onClick = { undoLastEdit() },
+                                enabled = undoSnapshots.isNotEmpty()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ChevronLeft,
+                                    contentDescription = "Undo global edit",
+                                    tint = if (undoSnapshots.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                                )
+                            }
+                            IconButton(
+                                onClick = { redoLastEdit() },
+                                enabled = redoSnapshots.isNotEmpty()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ChevronRight,
+                                    contentDescription = "Redo global edit",
+                                    tint = if (redoSnapshots.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter)
+                            .padding(top = 78.dp, start = 12.dp, end = 12.dp)
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.95f), RoundedCornerShape(12.dp))
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                selectionForCurrentDisplayPage()?.let { pageSelection ->
+                                    selectDocumentScope(pageSelection)
+                                    showControlsOverlay = false
+                                }
+                            }
+                        ) {
+                            Text("Select Page")
+                        }
+                        TextButton(
+                            onClick = {
+                                documentIndex.documentRange?.let { chapterSelection ->
+                                    selectDocumentScope(chapterSelection.copy(scope = SelectionScope.CHAPTER))
+                                    showControlsOverlay = false
+                                }
+                            }
+                        ) {
+                            Text("Select Chapter")
+                        }
+                        TextButton(
+                            onClick = {
+                                documentIndex.documentRange?.let { documentSelection ->
+                                    selectDocumentScope(documentSelection.copy(scope = SelectionScope.DOCUMENT))
+                                    showControlsOverlay = false
+                                }
+                            }
+                        ) {
+                            Text("Select Document")
                         }
                     }
 
@@ -1294,7 +1571,11 @@ fun ReaderScreen(
                 AskAiBottomSheet(
                     selectedText = selectedTextForAi,
                     selectedElementIndex = selectedElementIndexForAi,
-                    onDismissRequest = { showAskAiSheet = false },
+                    onDismissRequest = {
+                        showAskAiSheet = false
+                        replaceSelectedTextFromAi = null
+                        askAiInitialPrompt = ""
+                    },
                     onRunAiAction = onRunAiAction,
                     onInsertElementAfter = { newElem ->
                         val targetIdx = selectedElementIndexForAi ?: 0
@@ -1303,7 +1584,9 @@ fun ReaderScreen(
                     onReplaceElementAt = { newElem ->
                         val targetIdx = selectedElementIndexForAi ?: 0
                         onReplaceElementAt(chapter.id, targetIdx, newElem)
-                    }
+                    },
+                    onReplaceSelectedText = replaceSelectedTextFromAi,
+                    initialPrompt = askAiInitialPrompt
                 )
             }
         }
@@ -1333,11 +1616,14 @@ fun AskAiBottomSheet(
     onDismissRequest: () -> Unit,
     onRunAiAction: (prompt: String, contextText: String, callback: (String) -> Unit) -> Unit,
     onInsertElementAfter: (PageElement) -> Unit,
-    onReplaceElementAt: (PageElement) -> Unit
+    onReplaceElementAt: (PageElement) -> Unit,
+    onReplaceSelectedText: ((String) -> Unit)? = null,
+    initialPrompt: String = ""
 ) {
-    var userQuestion by remember { mutableStateOf("") }
+    var userQuestion by remember(initialPrompt) { mutableStateOf(initialPrompt) }
     var isAiRunning by remember { mutableStateOf(false) }
     var aiResponseText by remember { mutableStateOf("") }
+    var generatedStructuredDiagram by remember { mutableStateOf<PageElement.DiagramData?>(null) }
     val clipboardManager = LocalClipboardManager.current
 
     ModalBottomSheet(
@@ -1446,13 +1732,26 @@ fun AskAiBottomSheet(
                     onClick = {
                         val isDiagramPrompt = userQuestion.contains("Diagram", ignoreCase = true) || userQuestion.contains("Visual", ignoreCase = true)
                         val promptToUse = if (userQuestion.isNotBlank()) userQuestion else "Explain this concept clearly and concisely for exam study."
+                        if (isDiagramPrompt) {
+                            val structuredDiagram = LocalContentProcessor.createEducationalDiagramIfUseful(
+                                content = selectedText,
+                                instruction = promptToUse
+                            )
+                            if (structuredDiagram != null) {
+                                generatedStructuredDiagram = structuredDiagram
+                                aiResponseText = structuredDiagram.rawAscii
+                                isAiRunning = false
+                                return@Button
+                            }
+                        }
                         isAiRunning = true
                         val systemContext = if (isDiagramPrompt) {
                             "Convert the selected text/concept into clean SVG visual diagram code. Return ONLY valid <svg>...</svg> markup without explanations. Selected text: $selectedText"
                         } else {
-                            "You are a helpful exam study assistant. Simplify and structure the response using simple bullet points and clean headings. DO NOT add highlight background tags or colored spans. Format headings cleanly as H1, H2, or H3. Selected text: $selectedText"
+                            "You are a helpful exam study assistant. Modify ONLY the selected text/scope below and do not assume permission to change anything outside it. Return replacement-ready text with simple bullet points and clean headings where useful. DO NOT add highlight background tags or colored spans. Format headings cleanly as H1, H2, or H3. Selected text: $selectedText"
                         }
                         onRunAiAction(promptToUse, systemContext) { result ->
+                            generatedStructuredDiagram = null
                             aiResponseText = result
                             isAiRunning = false
                         }
@@ -1469,6 +1768,7 @@ fun AskAiBottomSheet(
             if (aiResponseText.isNotBlank()) {
                 Spacer(modifier = Modifier.height(16.dp))
                 val isSvg = aiResponseText.contains("<svg", ignoreCase = true)
+                val structuredDiagram = generatedStructuredDiagram
                 val cleanContent = cleanAiResponseForNotes(aiResponseText)
 
                 Card(
@@ -1484,7 +1784,12 @@ fun AskAiBottomSheet(
                             style = MaterialTheme.typography.titleSmall
                         )
                         Spacer(modifier = Modifier.height(6.dp))
-                        if (isSvg) {
+                        if (structuredDiagram != null) {
+                            DiagramCanvasView(
+                                diagram = structuredDiagram,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else if (isSvg) {
                             val svgMarkup = if (aiResponseText.contains("<svg")) {
                                 aiResponseText.substring(aiResponseText.indexOf("<svg"), aiResponseText.lastIndexOf("</svg>") + 6)
                             } else aiResponseText
@@ -1527,7 +1832,9 @@ fun AskAiBottomSheet(
                 ) {
                     Button(
                         onClick = {
-                            val newElem = if (isSvg) {
+                            val newElem = if (structuredDiagram != null) {
+                                structuredDiagram
+                            } else if (isSvg) {
                                 val svgMarkup = if (aiResponseText.contains("<svg")) {
                                     aiResponseText.substring(aiResponseText.indexOf("<svg"), aiResponseText.lastIndexOf("</svg>") + 6)
                                 } else aiResponseText
@@ -1546,7 +1853,15 @@ fun AskAiBottomSheet(
 
                     OutlinedButton(
                         onClick = {
-                            val newElem = if (isSvg) {
+                            if (structuredDiagram == null && !isSvg && onReplaceSelectedText != null) {
+                                onReplaceSelectedText.invoke(cleanContent)
+                                onDismissRequest()
+                                return@OutlinedButton
+                            }
+
+                            val newElem = if (structuredDiagram != null) {
+                                structuredDiagram
+                            } else if (isSvg) {
                                 val svgMarkup = if (aiResponseText.contains("<svg")) {
                                     aiResponseText.substring(aiResponseText.indexOf("<svg"), aiResponseText.lastIndexOf("</svg>") + 6)
                                 } else aiResponseText
@@ -1577,4 +1892,6 @@ fun AskAiBottomSheet(
         }
     }
 }
+
+
 

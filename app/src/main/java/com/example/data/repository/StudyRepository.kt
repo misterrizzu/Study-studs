@@ -9,6 +9,9 @@ import com.example.data.local.TestResultEntity
 import com.example.data.model.MoshiProvider
 import com.example.data.model.PageContent
 import com.example.data.model.PageElement
+import com.example.data.model.DocumentSelection
+import com.example.data.model.LogicalDocumentIndex
+import com.example.data.model.withSelectableText
 import com.example.data.preferences.PreferencesManager
 import com.example.data.remote.GeminiProcessor
 import com.example.data.remote.ProcessedChapterResult
@@ -592,6 +595,117 @@ class StudyRepository(
         studyDao.insertPages(updatedPages)
     }
 
+    suspend fun replaceDocumentSelection(
+        chapterId: Long,
+        selection: DocumentSelection,
+        replacement: String
+    ) {
+        val existingPages = studyDao.getPagesForChapter(chapterId).first().sortedBy { it.pageIndex }
+        if (existingPages.isEmpty()) return
+
+        val pageContents = existingPages.associate { page ->
+            page.id to try {
+                pageAdapter.fromJson(page.contentJson) ?: PageContent()
+            } catch (e: Exception) {
+                PageContent()
+            }
+        }
+
+        val index = LogicalDocumentIndex.build(existingPages) { json ->
+            try {
+                pageAdapter.fromJson(json) ?: PageContent()
+            } catch (e: Exception) {
+                PageContent()
+            }
+        }
+        if (index.blocks.isEmpty()) return
+
+        val normalized = selection.normalized(index)
+        val startBlock = index.blocks.getOrNull(normalized.start.blockIndex) ?: return
+        val endBlock = index.blocks.getOrNull(normalized.end.blockIndex) ?: return
+        val minBlock = startBlock.blockIndex
+        val maxBlock = endBlock.blockIndex
+        val startOffset = normalized.start.localOffset.coerceIn(0, startBlock.text.length)
+        val endOffset = normalized.end.localOffset.coerceIn(0, endBlock.text.length)
+        val pagesTouched = index.blocks
+            .filter { it.blockIndex in minBlock..maxBlock }
+            .map { it.pageId }
+            .toSet()
+        val blockByPageElement = index.blocks.associateBy { it.pageId to it.pageElementIndex }
+
+        val updatedPages = existingPages.map { page ->
+            if (page.id !in pagesTouched) return@map page
+
+            val currentContent = pageContents[page.id] ?: PageContent()
+            val newElements = mutableListOf<PageElement>()
+            var pageModified = false
+
+            currentContent.elements.forEachIndexed { elementIndex, element ->
+                val block = blockByPageElement[page.id to elementIndex]
+
+                if (block == null || block.blockIndex !in minBlock..maxBlock) {
+                    newElements.add(element)
+                    return@forEachIndexed
+                }
+
+                pageModified = true
+                when {
+                    minBlock == maxBlock -> {
+                        val before = block.text.substring(0, startOffset)
+                        val after = block.text.substring(endOffset.coerceAtLeast(startOffset))
+                        newElements.add(element.withSelectableText(before + replacement + after))
+                    }
+                    block.blockIndex == minBlock -> {
+                        val mergedText = block.text.substring(0, startOffset) + replacement
+                        if (mergedText.isNotBlank()) {
+                            newElements.add(element.withSelectableText(mergedText))
+                        }
+                    }
+                    block.blockIndex == maxBlock -> {
+                        val suffix = block.text.substring(endOffset)
+                        if (suffix.isNotBlank()) {
+                            newElements.add(element.withSelectableText(suffix))
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+
+            if (pageModified) {
+                val updatedJson = pageAdapter.toJson(PageContent(newElements)) ?: "{}"
+                page.copy(contentJson = updatedJson, contentRawText = rawTextForElements(newElements))
+            } else {
+                page
+            }
+        }
+
+        studyDao.insertPages(updatedPages)
+    }
+
+    suspend fun formatDocumentSelection(
+        chapterId: Long,
+        selection: DocumentSelection,
+        prefix: String,
+        suffix: String
+    ) {
+        val existingPages = studyDao.getPagesForChapter(chapterId).first().sortedBy { it.pageIndex }
+        val index = LogicalDocumentIndex.build(existingPages) { json ->
+            try {
+                pageAdapter.fromJson(json) ?: PageContent()
+            } catch (e: Exception) {
+                PageContent()
+            }
+        }
+        val selectedText = index.textForSelection(selection)
+        if (selectedText.isBlank()) return
+        replaceDocumentSelection(chapterId, selection, "$prefix$selectedText$suffix")
+    }
+
+    suspend fun restoreChapterPages(chapterId: Long, pageSnapshots: List<PageEntity>) {
+        if (pageSnapshots.isEmpty()) return
+        studyDao.insertPages(pageSnapshots.filter { it.chapterId == chapterId })
+    }
+
     suspend fun updatePageText(chapterId: Long, pageIndex: Int, newText: String) {
         val existingPages = studyDao.getPagesForChapter(chapterId).first()
         val pageToUpdate = existingPages.find { it.pageIndex == pageIndex }
@@ -635,6 +749,20 @@ class StudyRepository(
         }
     }
 
+    private fun rawTextForElements(elements: List<PageElement>): String {
+        return elements.joinToString("\n") { el ->
+            when (el) {
+                is PageElement.Heading -> el.text
+                is PageElement.Paragraph -> el.text
+                is PageElement.BulletList -> el.items.joinToString("\n")
+                is PageElement.NumberedList -> el.items.joinToString("\n")
+                is PageElement.Callout -> el.text
+                is PageElement.RawText -> el.text
+                else -> ""
+            }
+        }
+    }
+
     suspend fun runAiAssistantAction(instruction: String, targetText: String): String {
         val apiKeyVal = preferencesManager.getApiKey()
         val modelVal = preferencesManager.getSelectedModel()
@@ -650,10 +778,11 @@ class StudyRepository(
                 e.printStackTrace()
             }
         }
-        return "✨ AI Reader Analysis:\n$instruction\n\nTarget content:\n$targetText\n\nKey takeaways:\n• Content summarized cleanly for quick learning."
+        return "AI action could not run. Please add a valid API key in Settings and try again."
     }
 }
 
 private fun String?.isNull_or_blank(): Boolean {
     return this == null || this.trim().isEmpty()
 }
+

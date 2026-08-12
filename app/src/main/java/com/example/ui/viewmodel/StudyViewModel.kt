@@ -11,6 +11,7 @@ import com.example.data.local.QuestionEntity
 import com.example.data.local.SubjectEntity
 import com.example.data.local.TestResultEntity
 import com.example.data.model.MoshiProvider
+import com.example.data.model.DocumentSelection
 import com.example.data.model.PageContent
 import com.example.data.model.PageElement
 import com.example.data.model.UserAnswerRecord
@@ -265,6 +266,39 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteElementRangeAt(chapterId: Long, startIndex: Int, endIndex: Int) {
         viewModelScope.launch {
             repository.replaceElementRangeAtGlobalIndex(chapterId, startIndex, endIndex, null)
+            _selectedChapter.value?.let { chapter ->
+                if (chapter.id == chapterId) {
+                    selectChapter(chapter)
+                }
+            }
+        }
+    }
+
+    fun replaceDocumentSelection(chapterId: Long, selection: DocumentSelection, replacement: String) {
+        viewModelScope.launch {
+            repository.replaceDocumentSelection(chapterId, selection, replacement)
+            _selectedChapter.value?.let { chapter ->
+                if (chapter.id == chapterId) {
+                    selectChapter(chapter)
+                }
+            }
+        }
+    }
+
+    fun formatDocumentSelection(chapterId: Long, selection: DocumentSelection, prefix: String, suffix: String) {
+        viewModelScope.launch {
+            repository.formatDocumentSelection(chapterId, selection, prefix, suffix)
+            _selectedChapter.value?.let { chapter ->
+                if (chapter.id == chapterId) {
+                    selectChapter(chapter)
+                }
+            }
+        }
+    }
+
+    fun restoreChapterPages(chapterId: Long, pageSnapshots: List<PageEntity>) {
+        viewModelScope.launch {
+            repository.restoreChapterPages(chapterId, pageSnapshots)
             _selectedChapter.value?.let { chapter ->
                 if (chapter.id == chapterId) {
                     selectChapter(chapter)

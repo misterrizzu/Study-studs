@@ -47,6 +47,105 @@ object LocalContentProcessor {
         return false
     }
 
+    fun createEducationalDiagramIfUseful(
+        content: String,
+        instruction: String? = null
+    ): PageElement.DiagramData? {
+        val normalized = content.lowercase()
+        val forcedType = instruction?.let { inferDiagramType(it.lowercase(), allowWeakSignal = true) }
+        val diagramType = forcedType ?: inferDiagramType(normalized, allowWeakSignal = false) ?: return null
+        val items = extractDiagramItems(content, diagramType)
+        if (items.size < 3 && forcedType == null) return null
+
+        val nodes = items.take(8).mapIndexed { idx, label ->
+            val shape = when (diagramType) {
+                "CYCLE" -> "CIRCLE"
+                "HIERARCHY", "CONCEPT_MAP" -> if (idx == 0) "DIAMOND" else "RECT"
+                else -> "RECT"
+            }
+            DiagramNode(id = "N${idx + 1}", label = label, type = shape)
+        }
+        if (nodes.size < 2) return null
+
+        val connections = when (diagramType) {
+            "HIERARCHY", "CONCEPT_MAP" -> nodes.drop(1).map { node ->
+                DiagramConnection(fromId = nodes.first().id, toId = node.id, label = "")
+            }
+            "RELATIONSHIP" -> nodes.windowed(2).mapIndexed { idx, pair ->
+                DiagramConnection(fromId = pair[0].id, toId = pair[1].id, label = if (idx == 0) "relates to" else "")
+            }
+            "CYCLE" -> nodes.windowed(2).map { pair ->
+                DiagramConnection(fromId = pair[0].id, toId = pair[1].id, label = "")
+            } + DiagramConnection(fromId = nodes.last().id, toId = nodes.first().id, label = "repeats")
+            "COMPARISON" -> nodes.drop(1).map { node ->
+                DiagramConnection(fromId = nodes.first().id, toId = node.id, label = "compare")
+            }
+            else -> nodes.windowed(2).map { pair ->
+                DiagramConnection(fromId = pair[0].id, toId = pair[1].id, label = "")
+            }
+        }
+
+        return PageElement.DiagramData(
+            title = educationalDiagramTitle(diagramType),
+            diagramType = diagramType,
+            nodes = nodes,
+            connections = connections,
+            rawAscii = nodes.joinToString(" -> ") { it.label }
+        )
+    }
+
+    private fun inferDiagramType(text: String, allowWeakSignal: Boolean): String? {
+        if (Regex("flowchart|flow chart|process|algorithm|steps?|sequence|input.*output").containsMatchIn(text)) return "FLOWCHART"
+        if (Regex("hierarchy|tree|classification|types of|parts of|components of|consists of|family|father|mother|sister|brother|son|daughter").containsMatchIn(text)) return "HIERARCHY"
+        if (Regex("relationship|related to|connected to|depends on|interacts with|between").containsMatchIn(text)) return "RELATIONSHIP"
+        if (Regex("cycle|water cycle|repeats|loop|evaporation|condensation|precipitation").containsMatchIn(text)) return "CYCLE"
+        if (Regex("timeline|history|chronology|first|then|finally|before|after").containsMatchIn(text)) return "TIMELINE"
+        if (Regex("compare|comparison|versus| vs |advantages|disadvantages|difference between").containsMatchIn(text)) return "COMPARISON"
+        if (Regex("architecture|cpu|alu|control unit|memory|storage|network|operating system|input unit|output unit").containsMatchIn(text)) return "ARCHITECTURE"
+        if (Regex("labelled|labeled|label|parts shown|structure of").containsMatchIn(text)) return "LABELED_DIAGRAM"
+        return if (allowWeakSignal) "FLOWCHART" else null
+    }
+
+    private fun extractDiagramItems(content: String, diagramType: String): List<String> {
+        val explicitList = content
+            .split(Regex("\\n|;|,|â†’|->|=>"))
+            .map { it.trim().replace(Regex("^\\d+[\\.\\)]\\s+|^[\\-*â€¢]\\s+"), "") }
+            .filter { it.length in 2..42 }
+        if (explicitList.size >= 3) return explicitList
+
+        val keywordItems = when (diagramType) {
+            "ARCHITECTURE" -> listOf("Input Unit", "Control Unit", "ALU", "Memory", "Storage", "Output Unit")
+                .filter { content.contains(it, ignoreCase = true) }
+            "CYCLE" -> listOf("Evaporation", "Condensation", "Precipitation", "Collection")
+                .filter { content.contains(it, ignoreCase = true) }
+            "FLOWCHART" -> listOf("Input", "Processing", "Storage", "Output")
+                .filter { content.contains(it, ignoreCase = true) }
+            else -> emptyList()
+        }
+        if (keywordItems.size >= 2) return keywordItems
+
+        return content
+            .split(Regex("(?<=[.!?])\\s+"))
+            .map { it.trim().take(42).trim() }
+            .filter { it.length in 8..42 }
+            .take(5)
+    }
+
+    private fun educationalDiagramTitle(diagramType: String): String {
+        return when (diagramType) {
+            "FLOWCHART" -> "Flowchart"
+            "HIERARCHY" -> "Hierarchy Diagram"
+            "RELATIONSHIP" -> "Relationship Map"
+            "CYCLE" -> "Cycle Diagram"
+            "CONCEPT_MAP" -> "Concept Map"
+            "TIMELINE" -> "Timeline"
+            "COMPARISON" -> "Comparison Diagram"
+            "ARCHITECTURE" -> "Architecture Diagram"
+            "LABELED_DIAGRAM" -> "Labeled Diagram"
+            else -> "Study Diagram"
+        }
+    }
+
     fun processContentLocally(
         rawContent: String,
         extractQuestions: Boolean
@@ -212,6 +311,7 @@ object LocalContentProcessor {
                     i++
                 }
                 allElements.add(PageElement.BulletList(listItems))
+                createEducationalDiagramIfUseful(listItems.joinToString(". "), null)?.let { allElements.add(it) }
                 continue
             }
 
@@ -224,6 +324,7 @@ object LocalContentProcessor {
                     i++
                 }
                 allElements.add(PageElement.NumberedList(listItems))
+                createEducationalDiagramIfUseful(listItems.joinToString(". "), null)?.let { allElements.add(it) }
                 continue
             }
 
@@ -268,6 +369,7 @@ object LocalContentProcessor {
             }
 
             allElements.add(PageElement.Paragraph(fullPara, boldTerms))
+            createEducationalDiagramIfUseful(fullPara, null)?.let { allElements.add(it) }
         }
 
         // Split elements into screen-height fitting pages (Max ~420 height points per page)

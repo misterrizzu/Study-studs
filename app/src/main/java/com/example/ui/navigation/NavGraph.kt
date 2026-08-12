@@ -238,6 +238,15 @@ fun StudyStudsApp(
                         onDeleteElementRange = { chapterId, startIdx, endIdx ->
                             viewModel.deleteElementRangeAt(chapterId, startIdx, endIdx)
                         },
+                        onReplaceDocumentSelection = { chapterId, selection, replacement ->
+                            viewModel.replaceDocumentSelection(chapterId, selection, replacement)
+                        },
+                        onFormatDocumentSelection = { chapterId, selection, prefix, suffix ->
+                            viewModel.formatDocumentSelection(chapterId, selection, prefix, suffix)
+                        },
+                        onRestoreChapterPages = { chapterId, pageSnapshots ->
+                            viewModel.restoreChapterPages(chapterId, pageSnapshots)
+                        },
                         onAppendCallout = { chapterId, pageIndex, title, text ->
                             viewModel.appendCalloutToPage(chapterId, pageIndex, title, text)
                         },

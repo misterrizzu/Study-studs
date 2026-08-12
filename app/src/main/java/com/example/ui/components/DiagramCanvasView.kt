@@ -58,7 +58,13 @@ fun DiagramCanvasView(
 
         if (diagram.nodes.isNotEmpty()) {
             val nodeCount = diagram.nodes.size
-            val canvasHeight = (nodeCount * 90 + 20).dp
+            val diagramType = diagram.diagramType.uppercase()
+            val canvasHeight = when (diagramType) {
+                "HIERARCHY", "TREE", "CONCEPT_MAP", "COMPARISON", "ARCHITECTURE" -> 260.dp
+                "CYCLE" -> 280.dp
+                "TIMELINE", "PROCESS", "FLOWCHART" -> ((nodeCount.coerceAtLeast(2) * 72) + 30).dp
+                else -> (nodeCount * 90 + 20).dp
+            }
 
             Canvas(
                 modifier = Modifier
@@ -68,6 +74,87 @@ fun DiagramCanvasView(
                 val width = size.width
                 val boxWidth = (width * 0.7f).coerceAtMost(320f)
                 val boxHeight = 56f
+
+                fun drawNodeBox(label: String, x: Float, y: Float, w: Float, h: Float, accent: Color = primaryColor) {
+                    drawRoundRect(
+                        color = accent.copy(alpha = 0.15f),
+                        topLeft = Offset(x, y),
+                        size = Size(w, h),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(16f, 16f)
+                    )
+                    drawRoundRect(
+                        color = accent,
+                        topLeft = Offset(x, y),
+                        size = Size(w, h),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(16f, 16f),
+                        style = Stroke(width = 3f)
+                    )
+                    val measuredText = textMeasurer.measure(
+                        text = label,
+                        style = TextStyle(
+                            color = onSurface,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                    drawText(
+                        measuredText,
+                        topLeft = Offset(
+                            x + (w - measuredText.size.width) / 2f,
+                            y + (h - measuredText.size.height) / 2f
+                        )
+                    )
+                }
+
+                fun drawArrow(from: Offset, to: Offset) {
+                    drawLine(color = primaryColor, start = from, end = to, strokeWidth = 4f)
+                    val path = Path().apply {
+                        moveTo(to.x - 9f, to.y - 11f)
+                        lineTo(to.x + 9f, to.y - 11f)
+                        lineTo(to.x, to.y)
+                        close()
+                    }
+                    drawPath(path, color = primaryColor)
+                }
+
+                if (diagramType == "HIERARCHY" || diagramType == "TREE" || diagramType == "CONCEPT_MAP" || diagramType == "COMPARISON" || diagramType == "ARCHITECTURE") {
+                    val root = diagram.nodes.first()
+                    val rootWidth = (width * 0.6f).coerceAtMost(280f)
+                    val rootX = (width - rootWidth) / 2f
+                    drawNodeBox(root.label, rootX, 18f, rootWidth, boxHeight)
+
+                    val children = diagram.nodes.drop(1).take(6)
+                    val columns = if (children.size <= 3) children.size.coerceAtLeast(1) else 3
+                    val childWidth = (width / columns - 18f).coerceIn(92f, 170f)
+                    children.forEachIndexed { idx, node ->
+                        val row = idx / columns
+                        val col = idx % columns
+                        val x = 8f + col * (width / columns) + ((width / columns) - childWidth) / 2f
+                        val y = 128f + row * 78f
+                        drawNodeBox(node.label, x, y, childWidth, 52f, if (diagramType == "ARCHITECTURE") Color(0xFF2196F3) else primaryColor)
+                        drawLine(
+                            color = primaryColor,
+                            start = Offset(width / 2f, 74f),
+                            end = Offset(x + childWidth / 2f, y),
+                            strokeWidth = 3f
+                        )
+                    }
+                    return@Canvas
+                }
+
+                if (diagramType == "CYCLE") {
+                    val center = Offset(width / 2f, size.height / 2f)
+                    val radius = minOf(width, size.height) * 0.32f
+                    diagram.nodes.take(6).forEachIndexed { idx, node ->
+                        val angle = (-90.0 + idx * (360.0 / diagram.nodes.take(6).size)).toFloat()
+                        val radians = Math.toRadians(angle.toDouble())
+                        val x = center.x + kotlin.math.cos(radians).toFloat() * radius - 58f
+                        val y = center.y + kotlin.math.sin(radians).toFloat() * radius - 26f
+                        drawNodeBox(node.label, x, y, 116f, 52f)
+                    }
+                    return@Canvas
+                }
+
                 val startX = (width - boxWidth) / 2f
 
                 for (idx in diagram.nodes.indices) {
@@ -75,32 +162,7 @@ fun DiagramCanvasView(
                     val startY = idx * 90f + 20f
 
                     // Draw Node Box
-                    drawRoundRect(
-                        color = primaryColor.copy(alpha = 0.15f),
-                        topLeft = Offset(startX, startY),
-                        size = Size(boxWidth, boxHeight),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(16f, 16f)
-                    )
-                    drawRoundRect(
-                        color = primaryColor,
-                        topLeft = Offset(startX, startY),
-                        size = Size(boxWidth, boxHeight),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(16f, 16f),
-                        style = Stroke(width = 3f)
-                    )
-
-                    // Draw Text inside box
-                    val measuredText = textMeasurer.measure(
-                        text = node.label,
-                        style = TextStyle(
-                            color = onSurface,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    )
-                    val textX = startX + (boxWidth - measuredText.size.width) / 2f
-                    val textY = startY + (boxHeight - measuredText.size.height) / 2f
-                    drawText(measuredText, topLeft = Offset(textX, textY))
+                    drawNodeBox(node.label, startX, startY, boxWidth, boxHeight)
 
                     // Draw Arrow connection to next node
                     if (idx < nodeCount - 1) {

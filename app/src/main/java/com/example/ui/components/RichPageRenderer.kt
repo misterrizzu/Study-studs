@@ -89,7 +89,7 @@ fun RichPageRenderer(
     onToggleControlsOverlay: (() -> Unit)? = null,
     onElementTextUpdated: ((elementIndex: Int, newText: String) -> Unit)? = null,
     onEditingStateChanged: ((Boolean) -> Unit)? = null,
-    onAskAiSelectedText: ((String) -> Unit)? = null,
+    onAskAiSelectedText: ((selectedText: String, elementIndex: Int, replaceSelectedText: ((String) -> Unit)?) -> Unit)? = null,
     onConvertDiagramToSvg: ((asciiText: String, onSvgResult: (String) -> Unit) -> Unit)? = null
 ) {
     val isDark = isSystemInDarkTheme()
@@ -147,7 +147,10 @@ fun RichPageRenderer(
                         },
                         fontSize = targetFontSize,
                         color = bodyTextColor,
-                        textAlign = textAlign
+                        textAlign = textAlign,
+                        onAskAiSelectedText = { selectedText, replaceSelectedText ->
+                            onAskAiSelectedText?.invoke(selectedText, index, replaceSelectedText)
+                        }
                     )
                 } else {
                     val elementModifier = Modifier
@@ -175,8 +178,29 @@ fun RichPageRenderer(
                                     onToggleControlsOverlay?.invoke()
                                 },
                                 onDoubleTap = {
-                                    onSelectionRangeChanged?.invoke(index, index)
-                                    onElementSelected?.invoke(index)
+                                    when (element) {
+                                        is PageElement.Heading,
+                                        is PageElement.Paragraph,
+                                        is PageElement.Callout,
+                                        is PageElement.RawText -> {
+                                            onSelectionRangeChanged?.invoke(null, null)
+                                            onElementSelected?.invoke(null)
+                                            editingElementIndex = index
+                                            editingText = stripCodeAndTags(
+                                                when (element) {
+                                                    is PageElement.Heading -> element.text
+                                                    is PageElement.Paragraph -> element.text
+                                                    is PageElement.Callout -> element.text
+                                                    is PageElement.RawText -> element.text
+                                                    else -> ""
+                                                }
+                                            )
+                                        }
+                                        else -> {
+                                            onSelectionRangeChanged?.invoke(index, index)
+                                            onElementSelected?.invoke(index)
+                                        }
+                                    }
                                 }
                             )
                         }
@@ -269,7 +293,7 @@ fun RichPageRenderer(
                                                         }
                                                     }
                                                 if (rangeText.isNotBlank()) {
-                                                    onAskAiSelectedText?.invoke(rangeText)
+                                                    onAskAiSelectedText?.invoke(rangeText, minSel, null)
                                                 }
                                             },
                                             modifier = Modifier.size(28.dp)
@@ -681,7 +705,7 @@ fun InPlaceLineTextEditor(
     fontSize: TextUnit,
     color: Color,
     textAlign: TextAlign,
-    onAskAiSelectedText: ((String) -> Unit)? = null,
+    onAskAiSelectedText: ((selectedText: String, replaceSelectedText: (String) -> Unit) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val focusRequester = remember { FocusRequester() }
@@ -822,7 +846,21 @@ fun InPlaceLineTextEditor(
                     // Ask AI about this word
                     if (onAskAiSelectedText != null) {
                         Button(
-                            onClick = { onAskAiSelectedText.invoke(selectedSubstring) },
+                            onClick = {
+                                val start = selectedRange.min
+                                val end = selectedRange.max
+                                onAskAiSelectedText.invoke(selectedSubstring) { replacement ->
+                                    val currentText = textFieldValue.text
+                                    val before = currentText.substring(0, start.coerceIn(0, currentText.length))
+                                    val after = currentText.substring(end.coerceIn(0, currentText.length))
+                                    val newText = before + replacement + after
+                                    textFieldValue = TextFieldValue(
+                                        text = newText,
+                                        selection = TextRange(before.length, before.length + replacement.length)
+                                    )
+                                    onValueChange(newText)
+                                }
+                            },
                             modifier = Modifier.height(26.dp),
                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                         ) {

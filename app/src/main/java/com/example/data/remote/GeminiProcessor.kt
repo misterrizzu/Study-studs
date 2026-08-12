@@ -100,8 +100,9 @@ class GeminiProcessor {
             append("- BULLET_LIST: items array\n")
             append("- NUMBERED_LIST: items array\n")
             append("- TABLE: headers array, rows array of arrays\n")
-            append("- DIAGRAM: title, diagramType ('FLOWCHART','BLOCK','TREE'), nodes array ({id, label, type}), connections array ({fromId, toId, label}), rawAscii\n")
+            append("- DIAGRAM: title, diagramType ('FLOWCHART','HIERARCHY','RELATIONSHIP','PROCESS','CYCLE','CONCEPT_MAP','TIMELINE','COMPARISON','ARCHITECTURE','LABELED_DIAGRAM'), nodes array ({id, label, type}), connections array ({fromId, toId, label}), rawAscii\n")
             append("- CALLOUT: title, text, type ('INFO','NOTE','WARNING')\n\n")
+            append("Diagram rule: add DIAGRAM elements only when a visual materially improves learning, such as processes, cycles, hierarchies, relationships, timelines, comparisons, architecture/block explanations, or labeled parts. Do NOT add decorative diagrams or diagrams for simple definitions. Place each useful diagram directly after the relevant paragraph/list.\n\n")
 
             append("ALSO extract 2 to 5 relevant key topic tags/keywords for this chapter (e.g. [\"Thermodynamics\", \"Heat Transfer\", \"Entropy\"]).\n\n")
 
