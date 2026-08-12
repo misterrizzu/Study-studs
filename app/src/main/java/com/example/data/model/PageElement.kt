@@ -56,6 +56,12 @@ sealed class PageElement {
         val text: String,
         val stylePreset: String = "samsung" // samsung, monospace, standard
     ) : PageElement()
+
+    data class ImageData(
+        val caption: String = "",
+        val imageUriOrBase64: String = "",
+        val isAiGenerated: Boolean = false
+    ) : PageElement()
 }
 
 @JsonClass(generateAdapter = true)
@@ -150,6 +156,12 @@ class PageElementAdapter : JsonAdapter<PageElement>() {
                 val text = map["text"] as? String ?: ""
                 val stylePreset = map["stylePreset"] as? String ?: map["style_preset"] as? String ?: "samsung"
                 PageElement.RawText(text, stylePreset)
+            }
+            "IMAGE" -> {
+                val caption = map["caption"] as? String ?: ""
+                val imageUriOrBase64 = map["imageUriOrBase64"] as? String ?: map["image_uri_or_base64"] as? String ?: ""
+                val isAiGenerated = map["isAiGenerated"] as? Boolean ?: false
+                PageElement.ImageData(caption, imageUriOrBase64, isAiGenerated)
             }
             else -> {
                 val text = map["text"] as? String ?: ""
@@ -247,6 +259,12 @@ class PageElementAdapter : JsonAdapter<PageElement>() {
                 writer.name("type").value("RAW_TEXT")
                 writer.name("text").value(value.text)
                 writer.name("stylePreset").value(value.stylePreset)
+            }
+            is PageElement.ImageData -> {
+                writer.name("type").value("IMAGE")
+                writer.name("caption").value(value.caption)
+                writer.name("imageUriOrBase64").value(value.imageUriOrBase64)
+                writer.name("isAiGenerated").value(value.isAiGenerated)
             }
         }
         writer.endObject()

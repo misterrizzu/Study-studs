@@ -16,6 +16,9 @@ class PreferencesManager(context: Context) {
     private val _selectedModel = MutableStateFlow(getSelectedModel())
     val selectedModel: StateFlow<String> = _selectedModel.asStateFlow()
 
+    private val _selectedImageModel = MutableStateFlow(getSelectedImageModel())
+    val selectedImageModel: StateFlow<String> = _selectedImageModel.asStateFlow()
+
     private val _themeMode = MutableStateFlow(getThemeMode())
     val themeMode: StateFlow<String> = _themeMode.asStateFlow()
 
@@ -54,6 +57,15 @@ class PreferencesManager(context: Context) {
         _selectedModel.value = model
     }
 
+    fun getSelectedImageModel(): String {
+        return prefs.getString(KEY_IMAGE_MODEL, DEFAULT_IMAGE_MODEL) ?: DEFAULT_IMAGE_MODEL
+    }
+
+    fun saveSelectedImageModel(model: String) {
+        prefs.edit().putString(KEY_IMAGE_MODEL, model).apply()
+        _selectedImageModel.value = model
+    }
+
     fun getThemeMode(): String {
         return prefs.getString(KEY_THEME, "SYSTEM") ?: "SYSTEM"
     }
@@ -67,6 +79,7 @@ class PreferencesManager(context: Context) {
         prefs.edit().clear().apply()
         _apiKey.value = null
         _selectedModel.value = DEFAULT_MODEL
+        _selectedImageModel.value = DEFAULT_IMAGE_MODEL
         _themeMode.value = "SYSTEM"
         _isSetupCompleted.value = false
     }
@@ -75,8 +88,10 @@ class PreferencesManager(context: Context) {
         private const val KEY_SETUP_COMPLETED = "is_setup_completed"
         private const val KEY_API_KEY = "gemini_api_key"
         private const val KEY_MODEL = "gemini_model"
+        private const val KEY_IMAGE_MODEL = "gemini_image_model"
         private const val KEY_THEME = "theme_mode"
         const val DEFAULT_MODEL = "gemini-3.5-flash"
+        const val DEFAULT_IMAGE_MODEL = "imagen-3.0-generate-002"
 
         val AVAILABLE_MODELS = listOf(
             "gemini-2.5-flash",
@@ -84,6 +99,12 @@ class PreferencesManager(context: Context) {
             "gemini-3.1-pro",
             "gemini-3.5-flash",
             "gemini-3.5-flash-lite",
+            "gemini-3.6-flash"
+        )
+
+        val AVAILABLE_IMAGE_MODELS = listOf(
+            "imagen-3.0-generate-002",
+            "gemini-2.5-flash",
             "gemini-3.6-flash"
         )
     }

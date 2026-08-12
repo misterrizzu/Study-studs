@@ -418,11 +418,7 @@ class StudyRepository(
                     else -> ""
                 }
 
-                val cleanOld = oldText.replace(Regex("(?i)<font color=\"[^\"]+\">|</font>|<size scale=\"[^\"]+\">|</size>"), "").trim()
-                val cleanElem = oldElemText.replace(Regex("(?i)<font color=\"[^\"]+\">|</font>|<size scale=\"[^\"]+\">|</size>"), "").trim()
-
-                val isTarget = (currentGlobalIndex == globalElementIndex) ||
-                               (cleanOld.isNotBlank() && cleanElem == cleanOld)
+                val isTarget = (currentGlobalIndex == globalElementIndex)
 
                 if (isTarget) {
                     val updatedElem = when (oldElem) {
@@ -779,6 +775,15 @@ class StudyRepository(
             }
         }
         return "AI action could not run. Please add a valid API key in Settings and try again."
+    }
+
+    suspend fun generateImageForDiagram(prompt: String): String {
+        val apiKeyVal = preferencesManager.getApiKey() ?: ""
+        val imageModelVal = preferencesManager.getSelectedImageModel()
+        if (apiKeyVal.isNotBlank()) {
+            return geminiProcessor.generateImageFromPrompt(apiKeyVal, imageModelVal, prompt)
+        }
+        return ""
     }
 }
 

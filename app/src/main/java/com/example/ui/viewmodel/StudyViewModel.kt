@@ -36,6 +36,7 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
 
     val apiKey: StateFlow<String?>
     val selectedModel: StateFlow<String>
+    val selectedImageModel: StateFlow<String>
     val themeMode: StateFlow<String>
     val isSetupCompleted: StateFlow<Boolean>
     val allSubjects: StateFlow<List<SubjectEntity>>
@@ -46,8 +47,7 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedSubject = MutableStateFlow<SubjectEntity?>(null)
     val selectedSubject: StateFlow<SubjectEntity?> = _selectedSubject.asStateFlow()
 
-    private val _subjectChapters = MutableStateFlow<List<ChapterEntity>>(emptyList())
-    val subjectChapters: StateFlow<List<ChapterEntity>> = _subjectChapters.asStateFlow()
+    val subjectChapters: StateFlow<List<ChapterEntity>>
 
     private val _selectedChapter = MutableStateFlow<ChapterEntity?>(null)
     val selectedChapter: StateFlow<ChapterEntity?> = _selectedChapter.asStateFlow()
@@ -94,6 +94,9 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
         selectedModel = repository.selectedModel.stateIn(
             viewModelScope, SharingStarted.WhileSubscribed(5000), prefs.getSelectedModel()
         )
+        selectedImageModel = prefs.selectedImageModel.stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000), prefs.getSelectedImageModel()
+        )
         themeMode = repository.themeMode.stateIn(
             viewModelScope, SharingStarted.WhileSubscribed(5000), prefs.getThemeMode()
         )
@@ -109,10 +112,18 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
         allTestResults = repository.allTestResults.stateIn(
             viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList()
         )
+
+        subjectChapters = combine(allChapters, _selectedSubject) { chapters, selected ->
+            if (selected == null) emptyList() else chapters.filter { it.subjectId == selected.id }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     }
 
     fun saveApiKey(key: String) = repository.saveApiKey(key)
     fun saveSelectedModel(model: String) = repository.saveSelectedModel(model)
+    fun saveSelectedImageModel(model: String) {
+        val prefs = PreferencesManager(getApplication())
+        prefs.saveSelectedImageModel(model)
+    }
     fun saveThemeMode(theme: String) = repository.saveThemeMode(theme)
     fun markSetupCompleted() = repository.markSetupCompleted()
 
@@ -133,9 +144,34 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectSubject(subject: SubjectEntity) {
         _selectedSubject.value = subject
+    }
+
+    fun generateAndReplaceDiagramWithImage(
+        chapterId: Long,
+        globalIndex: Int,
+        prompt: String
+    ) {
         viewModelScope.launch {
-            repository.getChaptersForSubject(subject.id).collect { chapters ->
-                _subjectChapters.value = chapters
+            _isProcessingContent.value = true
+            _processingStatusMessage.value = "Generating AI Diagram image..."
+            try {
+                val imageBase64OrUri = repository.generateImageForDiagram(prompt)
+                if (imageBase64OrUri.isNotBlank()) {
+                    val imageData = PageElement.ImageData(
+                        caption = prompt.take(100),
+                        imageUriOrBase64 = imageBase64OrUri,
+                        isAiGenerated = true
+                    )
+                    repository.replaceElementAtGlobalIndex(chapterId, globalIndex, imageData)
+                    _selectedChapter.value?.let { ch ->
+                        if (ch.id == chapterId) selectChapter(ch)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                _isProcessingContent.value = false
+                _processingStatusMessage.value = ""
             }
         }
     }

@@ -763,4 +763,94 @@ class GeminiProcessor {
         }
         return@withContext "No response from AI model."
     }
+
+    suspend fun generateImageFromPrompt(
+        apiKey: String,
+        modelName: String,
+        prompt: String
+    ): String = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) return@withContext ""
+        val model = if (modelName.isBlank()) "imagen-3.0-generate-002" else modelName
+
+        if (model.contains("imagen", ignoreCase = true)) {
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:predict?key=$apiKey"
+            val jsonBody = JSONObject().apply {
+                val instancesArray = JSONArray().apply {
+                    put(JSONObject().apply { put("prompt", prompt) })
+                }
+                put("instances", instancesArray)
+                put("parameters", JSONObject().apply { put("sampleCount", 1) })
+            }
+            val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder().url(url).post(requestBody).build()
+
+            try {
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.e("GeminiProcessor", "Imagen API HTTP error: ${response.code}")
+                        return@withContext ""
+                    }
+                    val responseString = response.body?.string() ?: ""
+                    val root = JSONObject(responseString)
+                    val predictions = root.optJSONArray("predictions")
+                    if (predictions != null && predictions.length() > 0) {
+                        val first = predictions.getJSONObject(0)
+                        val b64 = first.optString("bytesBase64Encoded", "")
+                        if (b64.isNotBlank()) return@withContext "data:image/png;base64,$b64"
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("GeminiProcessor", "Imagen call failed", e)
+            }
+        }
+
+        // Fallback or multimodal Gemini model generateContent
+        val fallbackModel = if (model.contains("imagen", ignoreCase = true)) "gemini-2.5-flash" else model
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$fallbackModel:generateContent?key=$apiKey"
+
+        val jsonBody = JSONObject().apply {
+            val contentsArray = JSONArray().apply {
+                val contentObj = JSONObject().apply {
+                    val partsArray = JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("text", "Generate a detailed educational diagram image for study notes: $prompt")
+                        })
+                    }
+                    put("parts", partsArray)
+                }
+                put(contentObj)
+            }
+            put("contents", contentsArray)
+        }
+
+        val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder().url(url).post(requestBody).build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val responseString = response.body?.string() ?: ""
+                    val root = JSONObject(responseString)
+                    val candidates = root.optJSONArray("candidates")
+                    if (candidates != null && candidates.length() > 0) {
+                        val parts = candidates.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts")
+                        if (parts != null && parts.length() > 0) {
+                            for (i in 0 until parts.length()) {
+                                val p = parts.getJSONObject(i)
+                                val inlineData = p.optJSONObject("inlineData") ?: p.optJSONObject("inline_data")
+                                if (inlineData != null) {
+                                    val mime = inlineData.optString("mimeType", "image/png")
+                                    val data = inlineData.optString("data", "")
+                                    if (data.isNotBlank()) return@withContext "data:$mime;base64,$data"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("GeminiProcessor", "Gemini image fallback call failed", e)
+        }
+        return@withContext ""
+    }
 }
